@@ -1,7 +1,7 @@
 (function (PluginVerse) {
   "use strict";
 
-  const VERSION = "0.6.1";
+  const VERSION = "0.6.2";
   const eventCounts = Object.create(null);
   const blockedEvents = [
     "contextmenu",
@@ -540,6 +540,256 @@
       .trim();
   }
 
+  function normalizeMarkdown(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function escapeMarkdown(text) {
+    return String(text || "").replace(/([\\`*_{}[\]()#+.!|>~-])/g, "\\$1");
+  }
+
+  function escapeTableCell(text) {
+    return normalizeMarkdown(text)
+      .replace(/\n+/g, "<br>")
+      .replace(/\|/g, "\\|");
+  }
+
+  function absoluteUrl(value) {
+    const raw = String(value || "").trim();
+    if (!raw || raw.startsWith("data:") || raw.startsWith("blob:")) {
+      return raw;
+    }
+
+    try {
+      return new URL(raw, location.href).href;
+    } catch {
+      return raw;
+    }
+  }
+
+  function firstSrcFromSrcset(value) {
+    return String(value || "")
+      .split(",")
+      .map((part) => part.trim().split(/\s+/)[0])
+      .find(Boolean) || "";
+  }
+
+  function cloneContentNode(node) {
+    const clone = node.cloneNode(true);
+    const removeSelectors = [
+      "script",
+      "style",
+      "noscript",
+      "svg",
+      "button",
+      "textarea",
+      "input",
+      "select",
+      "#mianshiya-custom-menu",
+      "#mianshiya-md-download-toolbar",
+      "#mianshiya-md-download-button",
+      ".ant-modal-root",
+      ".login-modal",
+      ".ant-modal-mask",
+      ".question-title-actions",
+      ".ant-tabs-nav",
+      "footer",
+    ];
+
+    for (const selector of removeSelectors) {
+      for (const item of clone.querySelectorAll(selector)) {
+        item.remove();
+      }
+    }
+
+    return clone;
+  }
+
+  function removeDuplicateTitleHeading(node, title) {
+    const firstHeading = node?.querySelector?.("h1");
+    if (!firstHeading) {
+      return;
+    }
+
+    if (normalizeMarkdown(firstHeading.textContent) === normalizeMarkdown(title)) {
+      firstHeading.remove();
+    }
+  }
+
+  function childNodesToMarkdown(node, context = {}) {
+    return Array.from(node.childNodes || [])
+      .map((child) => nodeToMarkdown(child, context))
+      .join("");
+  }
+
+  function blockMarkdown(text) {
+    const normalized = normalizeMarkdown(text);
+    return normalized ? `${normalized}\n\n` : "";
+  }
+
+  function inlineMarkdown(node, context = {}) {
+    return normalizeMarkdown(childNodesToMarkdown(node, { ...context, inline: true })).replace(/\n+/g, " ");
+  }
+
+  function markdownImage(node) {
+    const src =
+      node.currentSrc ||
+      node.getAttribute("src") ||
+      node.getAttribute("data-src") ||
+      node.getAttribute("data-original") ||
+      firstSrcFromSrcset(node.getAttribute("srcset") || node.getAttribute("data-srcset")) ||
+      "";
+    const url = absoluteUrl(src);
+    if (!url) {
+      return "";
+    }
+
+    const alt = node.getAttribute("alt") || node.getAttribute("title") || "图片";
+    return `![${String(alt).replace(/[[\]]/g, "")}](${url})`;
+  }
+
+  function markdownList(node, context = {}) {
+    const ordered = node.tagName === "OL";
+    const items = Array.from(node.children || []).filter((child) => child.tagName === "LI");
+    const depth = context.listDepth || 0;
+    const indent = "  ".repeat(depth);
+
+    return items
+      .map((item, index) => {
+        const marker = ordered ? `${index + 1}. ` : "- ";
+        const content = normalizeMarkdown(childNodesToMarkdown(item, { ...context, listDepth: depth + 1 }));
+        const lines = content.split("\n").filter(Boolean);
+        if (!lines.length) {
+          return `${indent}${marker}`;
+        }
+
+        const [first, ...rest] = lines;
+        const nested = rest.map((line) => `${indent}  ${line}`).join("\n");
+        return `${indent}${marker}${first}${nested ? `\n${nested}` : ""}`;
+      })
+      .join("\n") + "\n\n";
+  }
+
+  function markdownTable(node) {
+    const rows = Array.from(node.querySelectorAll("tr"))
+      .map((row) => Array.from(row.children || []).map((cell) => escapeTableCell(childNodesToMarkdown(cell, { inline: true }))))
+      .filter((cells) => cells.length);
+
+    if (!rows.length) {
+      return "";
+    }
+
+    const width = Math.max(...rows.map((row) => row.length));
+    const normalizedRows = rows.map((row) => {
+      const copy = row.slice();
+      while (copy.length < width) {
+        copy.push("");
+      }
+      return copy;
+    });
+    const header = normalizedRows[0];
+    const divider = header.map(() => "---");
+    const body = normalizedRows.slice(1);
+    const tableRows = [header, divider, ...body].map((row) => `| ${row.join(" | ")} |`);
+
+    return `${tableRows.join("\n")}\n\n`;
+  }
+
+  function nodeToMarkdown(node, context = {}) {
+    if (!node) {
+      return "";
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return context.inline ? escapeMarkdown(node.textContent || "") : node.textContent || "";
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const tag = node.tagName;
+
+    if (node.hidden || node.getAttribute("aria-hidden") === "true") {
+      return "";
+    }
+
+    if (tag === "IMG") {
+      return markdownImage(node);
+    }
+
+    if (tag === "BR") {
+      return "\n";
+    }
+
+    if (tag === "A") {
+      const text = inlineMarkdown(node, context) || node.getAttribute("href") || "";
+      const href = absoluteUrl(node.getAttribute("href") || "");
+      return href ? `[${text}](${href})` : text;
+    }
+
+    if (tag === "STRONG" || tag === "B") {
+      const text = inlineMarkdown(node, context);
+      return text ? `**${text}**` : "";
+    }
+
+    if (tag === "EM" || tag === "I") {
+      const text = inlineMarkdown(node, context);
+      return text ? `_${text}_` : "";
+    }
+
+    if (tag === "CODE" && node.parentElement?.tagName !== "PRE") {
+      return `\`${String(node.textContent || "").replace(/`/g, "\\`")}\``;
+    }
+
+    if (tag === "PRE") {
+      const code = node.textContent || "";
+      const lang = node.querySelector("code")?.className?.match(/language-([a-z0-9_-]+)/i)?.[1] || "";
+      return `\`\`\`${lang}\n${code.replace(/\n+$/, "")}\n\`\`\`\n\n`;
+    }
+
+    if (/^H[1-6]$/.test(tag)) {
+      const level = Number(tag.slice(1));
+      const text = inlineMarkdown(node, context);
+      return text ? `${"#".repeat(level)} ${text}\n\n` : "";
+    }
+
+    if (tag === "P") {
+      return blockMarkdown(childNodesToMarkdown(node, context));
+    }
+
+    if (tag === "BLOCKQUOTE") {
+      const text = normalizeMarkdown(childNodesToMarkdown(node, context));
+      return text ? `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n` : "";
+    }
+
+    if (tag === "UL" || tag === "OL") {
+      return markdownList(node, context);
+    }
+
+    if (tag === "TABLE") {
+      return markdownTable(node);
+    }
+
+    if (tag === "HR") {
+      return "---\n\n";
+    }
+
+    if (["DIV", "SECTION", "ARTICLE", "MAIN", "HEADER", "ASIDE", "NAV"].includes(tag)) {
+      return blockMarkdown(childNodesToMarkdown(node, context));
+    }
+
+    if (["SPAN", "SMALL", "LABEL", "MARK"].includes(tag)) {
+      return childNodesToMarkdown(node, context);
+    }
+
+    return childNodesToMarkdown(node, context);
+  }
+
   function getMainContentNode() {
     return (
       document.querySelector("#question-content-in-bank-client") ||
@@ -558,7 +808,9 @@
   function buildMarkdown() {
     const main = getMainContentNode();
     const title = getPageTitle();
-    const body = visibleText(main);
+    const bodyNode = main ? cloneContentNode(main) : null;
+    removeDuplicateTitleHeading(bodyNode, title);
+    const body = normalizeMarkdown(bodyNode ? nodeToMarkdown(bodyNode) : visibleText(main));
     const url = location.href.replace(/#.*$/, "");
 
     return [`# ${title}`, "", `> 来源：${url}`, "", body]
