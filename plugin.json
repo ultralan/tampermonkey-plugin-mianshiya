@@ -1,0 +1,11 @@
+{
+  "id": "mianshiya",
+  "name": "面试鸭页面辅助",
+  "version": "0.6.0",
+  "description": "解除面试鸭页面前端选择/复制限制，提供复制 Markdown、调试日志和页面快照上报。",
+  "matches": [
+    "*://mianshiya.com/*",
+    "*://*.mianshiya.com/*"
+  ],
+  "runAt": "document-start"
+}
