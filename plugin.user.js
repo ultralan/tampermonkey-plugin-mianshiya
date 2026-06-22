@@ -13,8 +13,6 @@
     "keyup",
   ];
 
-  let panelBody = null;
-  let helperRoot = null;
   let styleEl = null;
   let customMenuEl = null;
 
@@ -141,7 +139,6 @@
       event.preventDefault();
       showCustomMenu(event.clientX || 20, event.clientY || 20);
       event.stopImmediatePropagation();
-      renderPanel();
       return;
     }
 
@@ -157,7 +154,6 @@
     }
 
     event.stopImmediatePropagation();
-    renderPanel();
   }
 
   function installEventGuards() {
@@ -316,49 +312,11 @@
           pointer-events: auto !important;
         }
 
-        #mianshiya-clip-helper,
-        #mianshiya-clip-helper *,
         #mianshiya-custom-menu,
         #mianshiya-custom-menu * {
           -webkit-user-select: text !important;
           user-select: text !important;
           pointer-events: auto !important;
-        }
-
-        #mianshiya-clip-helper {
-          position: fixed !important;
-          right: 18px !important;
-          bottom: 92px !important;
-          z-index: 2147483647 !important;
-          display: flex !important;
-          flex-direction: column !important;
-          gap: 8px !important;
-          width: 360px !important;
-          font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-        }
-
-        #mianshiya-clip-helper button {
-          border: 1px solid rgba(0, 0, 0, 0.16) !important;
-          border-radius: 6px !important;
-          padding: 8px 10px !important;
-          color: #111827 !important;
-          background: #ffffff !important;
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18) !important;
-          cursor: pointer !important;
-          font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-        }
-
-        #mianshiya-debug-panel {
-          max-height: 260px !important;
-          overflow: auto !important;
-          white-space: pre-wrap !important;
-          border: 1px solid rgba(0, 0, 0, 0.16) !important;
-          border-radius: 6px !important;
-          padding: 8px !important;
-          color: #111827 !important;
-          background: rgba(255, 255, 255, 0.97) !important;
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18) !important;
-          font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
         }
 
         #mianshiya-custom-menu {
@@ -517,88 +475,6 @@
     log("info", "mianshiya_snapshot_reported", snapshot);
   }
 
-  function renderPanel() {
-    if (!panelBody) {
-      return;
-    }
-
-    const main = getMainContentNode();
-    const status = [
-      `插件：mianshiya v${VERSION}`,
-      `客户端：${PluginVerse.client.name} ${PluginVerse.client.version}`,
-      `URL：${location.href}`,
-      `readyState：${document.readyState}`,
-      `选区：${selectedText().length} 字`,
-      `正文：${main ? visibleText(main).length : 0} 字`,
-      `body user-select：${document.body ? getComputedStyle(document.body).userSelect : "n/a"}`,
-      `事件：${Object.entries(eventCounts).map(([key, value]) => `${key}=${value}`).join(" ") || "暂无"}`,
-      "",
-      "日志：详见 PluginVerse 菜单或 Supabase pluginverse_logs 表。",
-    ];
-
-    panelBody.textContent = status.join("\n");
-  }
-
-  function makeButton(text, onClick) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = text;
-    button.addEventListener("click", async () => {
-      const oldText = button.textContent;
-      try {
-        await onClick();
-        button.textContent = "完成";
-      } catch (error) {
-        log("error", "mianshiya_button_failed", {
-          action: text,
-          error: String(error?.stack || error),
-        });
-        button.textContent = "失败";
-      } finally {
-        window.setTimeout(() => {
-          button.textContent = oldText;
-        }, 1200);
-      }
-    });
-    return button;
-  }
-
-  function ensureHelper() {
-    runWhenDomReady(() => {
-      if (document.querySelector("#mianshiya-clip-helper")) {
-        helperRoot = document.querySelector("#mianshiya-clip-helper");
-        panelBody = document.querySelector("#mianshiya-debug-panel");
-        renderPanel();
-        return;
-      }
-
-      helperRoot = document.createElement("div");
-      helperRoot.id = "mianshiya-clip-helper";
-
-      panelBody = document.createElement("div");
-      panelBody.id = "mianshiya-debug-panel";
-
-      helperRoot.append(
-        makeButton("复制当前选区", copySelection),
-        makeButton("复制题目 Markdown", copyMarkdown),
-        makeButton("上报页面快照", reportSnapshot),
-        makeButton("复制页面快照", copySnapshot),
-        makeButton("重新解除限制", async () => {
-          installEventGuards();
-          injectPageContextGuard();
-          injectStyle();
-          removeModalBlockers();
-          log("info", "mianshiya_reinforce_by_button", {});
-        }),
-        panelBody,
-      );
-
-      domRoot().appendChild(helperRoot);
-      log("info", "mianshiya_helper_inserted", {});
-      renderPanel();
-    }, "插入浮层");
-  }
-
   function boot() {
     log("info", "mianshiya_plugin_boot", {
       version: VERSION,
@@ -634,8 +510,6 @@
       try {
         removeModalBlockers();
         injectStyle();
-        ensureHelper();
-        renderPanel();
       } catch (error) {
         log("error", "mianshiya_reinforce_failed", { error: String(error?.stack || error) });
       }
