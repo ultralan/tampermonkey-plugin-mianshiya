@@ -1,7 +1,7 @@
 (function (PluginVerse) {
   "use strict";
 
-  const VERSION = "0.6.2";
+  const VERSION = "0.6.4";
   const eventCounts = Object.create(null);
   const blockedEvents = [
     "contextmenu",
@@ -246,11 +246,30 @@
     event.stopImmediatePropagation();
   }
 
+  function showContextMenuFromPointer(event) {
+    if (event.button !== 2) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    window.setTimeout(() => {
+      showCustomMenu(event.clientX || 20, event.clientY || 20);
+      log("info", "mianshiya_context_menu_fallback_mousedown", {
+        x: event.clientX || 20,
+        y: event.clientY || 20,
+      });
+    }, 0);
+  }
+
   function installEventGuards() {
     for (const type of blockedEvents) {
       window.addEventListener(type, guardEvent, true);
       document.addEventListener(type, guardEvent, true);
     }
+    window.addEventListener("mousedown", showContextMenuFromPointer, true);
+    document.addEventListener("mousedown", showContextMenuFromPointer, true);
     log("info", "mianshiya_event_guards_installed", {});
   }
 
@@ -864,6 +883,62 @@
     log("info", "mianshiya_snapshot_reported", snapshot);
   }
 
+  function menuCommandStore() {
+    const key = "__pluginverseMianshiyaMenuCommandIds";
+    window[key] = Array.isArray(window[key]) ? window[key] : [];
+    return window[key];
+  }
+
+  function clearPluginMenuCommands() {
+    const commandIds = menuCommandStore();
+    while (commandIds.length) {
+      const id = commandIds.pop();
+      try {
+        if (typeof PluginVerse.unregisterMenuCommand === "function") {
+          PluginVerse.unregisterMenuCommand(id);
+        } else if (typeof GM_unregisterMenuCommand === "function") {
+          GM_unregisterMenuCommand(id);
+        }
+      } catch (error) {
+        log("warn", "mianshiya_plugin_menu_unregister_failed", { error: String(error?.stack || error) });
+      }
+    }
+  }
+
+  function registerMenuCommand(name, handler) {
+    if (typeof PluginVerse.registerMenuCommand === "function") {
+      return PluginVerse.registerMenuCommand(name, handler);
+    }
+
+    if (typeof GM_registerMenuCommand === "function") {
+      return GM_registerMenuCommand(`面试鸭页面辅助：${name}`, handler);
+    }
+
+    return null;
+  }
+
+  function registerPluginMenuCommands() {
+    if (typeof PluginVerse.registerMenuCommand !== "function" && typeof GM_registerMenuCommand !== "function") {
+      log("warn", "mianshiya_plugin_menu_unavailable", {});
+      return;
+    }
+
+    clearPluginMenuCommands();
+
+    const commandIds = menuCommandStore();
+    commandIds.push(registerMenuCommand("下载当前页 Markdown", downloadMarkdown));
+    commandIds.push(registerMenuCommand("复制当前页 Markdown", copyMarkdown));
+    commandIds.push(registerMenuCommand("复制页面快照", copySnapshot));
+    commandIds.push(registerMenuCommand("重新解除限制", async () => {
+      installEventGuards();
+      injectPageContextGuard();
+      injectStyle();
+      installDownloadButton();
+      removeModalBlockers();
+      log("info", "mianshiya_reinforce_by_tampermonkey_menu", {});
+    }));
+  }
+
   function boot() {
     log("info", "mianshiya_plugin_boot", {
       version: VERSION,
@@ -895,6 +970,7 @@
     injectPageContextGuard();
     injectStyle();
     installDownloadButton();
+    registerPluginMenuCommands();
 
     const reinforce = () => {
       try {
