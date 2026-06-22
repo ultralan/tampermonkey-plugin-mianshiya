@@ -1,7 +1,7 @@
 (function (PluginVerse) {
   "use strict";
 
-  const VERSION = "0.6.0";
+  const VERSION = "0.6.1";
   const eventCounts = Object.create(null);
   const blockedEvents = [
     "contextmenu",
@@ -15,6 +15,7 @@
 
   let styleEl = null;
   let customMenuEl = null;
+  let downloadButtonEl = null;
 
   function log(level, event, data) {
     PluginVerse.log(level, event, {
@@ -59,6 +60,50 @@
     PluginVerse.setClipboard(text);
   }
 
+  function safeFileName(value) {
+    const cleaned = String(value || "")
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 90)
+      .trim();
+    return cleaned || "mianshiya-page";
+  }
+
+  function markdownFileName() {
+    return `${safeFileName(getPageTitle())}.md`;
+  }
+
+  function downloadTextFile(filename, text) {
+    if (!window.URL || typeof URL.createObjectURL !== "function") {
+      safeClipboardWrite(text);
+      throw new Error("当前浏览器不支持 Blob 下载，已复制 Markdown 到剪贴板");
+    }
+
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+
+    try {
+      domRoot().appendChild(anchor);
+      anchor.click();
+    } finally {
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+  }
+
+  async function downloadMarkdown() {
+    const markdown = buildMarkdown();
+    const filename = markdownFileName();
+    downloadTextFile(filename, markdown);
+    log("info", "mianshiya_markdown_downloaded", { filename, length: markdown.length });
+  }
+
   function hideCustomMenu() {
     if (customMenuEl) {
       customMenuEl.remove();
@@ -96,6 +141,7 @@
       customMenuEl.append(
         menuItem("复制当前选区", copySelection),
         menuItem("复制题目 Markdown", copyMarkdown),
+        menuItem("下载当前页 Markdown", downloadMarkdown),
         menuItem("上报页面快照", reportSnapshot),
         menuItem("复制页面快照", copySnapshot),
         menuItem("重新解除限制", async () => {
@@ -117,6 +163,50 @@
 
       log("info", "mianshiya_context_menu_shown", { x, y, selectedLength: selectedText().length });
     }, "显示自定义右键菜单");
+  }
+
+  function installDownloadButton() {
+    runWhenDomReady(() => {
+      const main = getMainContentNode();
+      if (!main) {
+        return;
+      }
+
+      const existing = document.getElementById("mianshiya-md-download-toolbar");
+      if (existing && existing.parentElement === main) {
+        downloadButtonEl = document.getElementById("mianshiya-md-download-button");
+        return;
+      }
+      existing?.remove();
+
+      const toolbar = document.createElement("div");
+      toolbar.id = "mianshiya-md-download-toolbar";
+
+      const button = document.createElement("button");
+      button.id = "mianshiya-md-download-button";
+      button.type = "button";
+      button.textContent = "下载 MD";
+      button.title = "下载当前页面 Markdown";
+      button.setAttribute("aria-label", "下载当前页面 Markdown");
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          await downloadMarkdown();
+        } catch (error) {
+          log("error", "mianshiya_markdown_download_failed", {
+            error: String(error?.stack || error),
+          });
+        }
+      });
+
+      toolbar.appendChild(button);
+      main.insertBefore(toolbar, main.firstChild);
+      downloadButtonEl = button;
+      log("info", "mianshiya_download_button_installed", {
+        target: main.id ? `#${main.id}` : String(main.tagName || "main").toLowerCase(),
+      });
+    }, "安装 Markdown 下载按钮");
   }
 
   function isProtectedShortcut(event) {
@@ -306,7 +396,9 @@
         #question-main,
         #question-main *,
         .markdown-body,
-        .markdown-body * {
+        .markdown-body *,
+        #mianshiya-md-download-toolbar,
+        #mianshiya-md-download-toolbar * {
           -webkit-user-select: text !important;
           user-select: text !important;
           pointer-events: auto !important;
@@ -349,6 +441,49 @@
         #mianshiya-custom-menu button:hover {
           background: #f3f4f6 !important;
         }
+
+        #mianshiya-md-download-toolbar {
+          display: flex !important;
+          justify-content: flex-end !important;
+          align-items: center !important;
+          min-height: 34px !important;
+          margin: 10px 0 12px !important;
+          padding: 0 !important;
+          position: relative !important;
+          z-index: 20 !important;
+          pointer-events: auto !important;
+        }
+
+        #mianshiya-md-download-button {
+          appearance: none !important;
+          min-width: 76px !important;
+          min-height: 32px !important;
+          padding: 6px 10px !important;
+          border: 1px solid rgba(17, 24, 39, 0.22) !important;
+          border-radius: 6px !important;
+          background: #ffffff !important;
+          color: #111827 !important;
+          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+          cursor: pointer !important;
+          font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+          letter-spacing: 0 !important;
+          white-space: nowrap !important;
+        }
+
+        #mianshiya-md-download-button:hover {
+          border-color: rgba(20, 84, 255, 0.42) !important;
+          background: #f8fafc !important;
+          color: #0f172a !important;
+        }
+
+        #mianshiya-md-download-button:active {
+          transform: translateY(1px) !important;
+        }
+
+        #mianshiya-md-download-button:focus-visible {
+          outline: 2px solid rgba(20, 84, 255, 0.36) !important;
+          outline-offset: 2px !important;
+        }
       `;
       (document.head || document.documentElement || document.body).appendChild(styleEl);
 
@@ -382,6 +517,8 @@
       "svg",
       "button",
       "textarea",
+      "#mianshiya-md-download-toolbar",
+      "#mianshiya-md-download-button",
       ".ant-modal-root",
       ".login-modal",
       ".ant-modal-mask",
@@ -505,11 +642,13 @@
     installEventGuards();
     injectPageContextGuard();
     injectStyle();
+    installDownloadButton();
 
     const reinforce = () => {
       try {
         removeModalBlockers();
         injectStyle();
+        installDownloadButton();
       } catch (error) {
         log("error", "mianshiya_reinforce_failed", { error: String(error?.stack || error) });
       }
