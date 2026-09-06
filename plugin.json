@@ -1,7 +1,7 @@
 {
   "id": "mianshiya",
   "name": "面试鸭题库采集",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "进入面试鸭题目详情页自动解析并幂等写入 Supabase 题库表，同时解除页面选择/复制限制。",
   "matches": [
     "*://mianshiya.com/*",

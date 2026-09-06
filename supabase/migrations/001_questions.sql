@@ -6,13 +6,14 @@ create extension if not exists pgcrypto;
 create schema if not exists tampermonkey_base;
 
 create table if not exists tampermonkey_base.questions (
-  question_id    bigint primary key,
+  -- 站点 ID 是 19 位数字，超出 JS Number 精度（2^53），插件侧与表侧都按字符串处理。
+  question_id    text primary key,
   question_no    int,
   title          text not null,
   difficulty     text,
   is_vip         boolean,
   tags           text[] not null default '{}',
-  bank_ids       bigint[] not null default '{}',
+  bank_ids       text[] not null default '{}',
   answer_key     text,
   extended_knowledge text,
   follow_ups     jsonb,
@@ -29,9 +30,17 @@ grant usage on schema tampermonkey_base to anon, authenticated;
 grant usage on schema tampermonkey_base to service_role;
 grant all on all tables in schema tampermonkey_base to service_role;
 
--- 插件直连 upsert（Prefer: resolution=merge-duplicates）需要 insert + update 两种权限。
-grant insert, update on tampermonkey_base.questions to anon;
+-- 插件直连 upsert（Prefer: resolution=merge-duplicates）需要 select + insert + update
+-- 三种权限：冲突判定与 RETURNING 都走 SELECT。
+grant select, insert, update on tampermonkey_base.questions to anon;
 grant select on tampermonkey_base.questions to authenticated;
+
+drop policy if exists "questions anon select" on tampermonkey_base.questions;
+create policy "questions anon select"
+  on tampermonkey_base.questions
+  for select
+  to anon
+  using (true);
 
 drop policy if exists "questions anon insert" on tampermonkey_base.questions;
 create policy "questions anon insert"
@@ -66,3 +75,19 @@ create index if not exists questions_bank_ids_idx
 
 comment on table tampermonkey_base.questions is
   '面试鸭题库采集数据。插件进入题目详情页自动解析并 upsert，核心内容变化时覆盖。';
+
+-- 兼容早期按 bigint 建的表：ID 精度丢失问题修复后的列类型转换（幂等）。
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'tampermonkey_base'
+      and table_name = 'questions'
+      and column_name = 'question_id'
+      and data_type = 'bigint'
+  ) then
+    alter table tampermonkey_base.questions
+      alter column question_id type text using question_id::text,
+      alter column bank_ids type text[] using bank_ids::text[];
+  end if;
+end $$;

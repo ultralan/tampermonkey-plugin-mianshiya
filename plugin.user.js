@@ -1,7 +1,7 @@
 (function (TM) {
   "use strict";
 
-  const VERSION = "0.7.0";
+  const VERSION = "0.7.1";
 
   const CONTENT_WAIT_TIMEOUT = 15000;
   const QUIET_PERIOD = 1500;
@@ -37,9 +37,10 @@
     if (!match) {
       return null;
     }
+    // 站点 ID 是 19 位数字，超出 JS Number 精度（2^53），必须保持字符串。
     return {
-      bankId: match[1] ? Number(match[1]) : null,
-      questionId: Number(match[2]),
+      bankId: match[1] || null,
+      questionId: match[2],
     };
   }
 
@@ -613,7 +614,7 @@
     if (info.bankId && !bankIds.includes(info.bankId)) {
       bankIds.push(info.bankId);
     }
-    bankIds.sort((a, b) => a - b);
+    bankIds.sort();
 
     const followUps = parseFollowUps(sections["面试官追问"]);
     const contentMd = buildContentMd(main, title);
