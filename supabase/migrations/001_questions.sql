@@ -26,6 +26,8 @@ create table if not exists tampermonkey_base.questions (
 alter table tampermonkey_base.questions enable row level security;
 
 grant usage on schema tampermonkey_base to anon, authenticated;
+grant usage on schema tampermonkey_base to service_role;
+grant all on all tables in schema tampermonkey_base to service_role;
 
 -- 插件直连 upsert（Prefer: resolution=merge-duplicates）需要 insert + update 两种权限。
 grant insert, update on tampermonkey_base.questions to anon;
