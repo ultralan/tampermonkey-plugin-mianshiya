@@ -1,0 +1,99 @@
+name: publish
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-plugin
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read plugin metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          ID=$(jq -r '.id' plugin.json)
+          NAME=$(jq -r '.name' plugin.json)
+          VERSION=$(jq -r '.version' plugin.json)
+          DESC=$(jq -r '.description' plugin.json)
+          MATCHES=$(jq -c '.matches' plugin.json)
+          SHA=$(sha256sum plugin.user.js | cut -d' ' -f1)
+          {
+            echo "id=$ID"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+            echo "desc=$DESC"
+            echo "matches=$MATCHES"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish runtime branch
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf .publish
+          mkdir .publish
+          cp plugin.user.js .publish/
+          touch .publish/.nojekyll
+          cd .publish
+          git init
+          git checkout -b published
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "发布插件 ${{ steps.meta.outputs.id }} ${{ steps.meta.outputs.version }} ${GITHUB_SHA}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" published
+
+      # 先发产物，后写注册表：注册指向的一定是已存在的脚本；
+      # 注册失败可直接重跑整个 workflow 自愈。
+      - name: Register plugin
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          TMB_SUPABASE_URL: ${{ vars.TMB_SUPABASE_URL || 'https://ovxaymldzdiatllhjbvx.supabase.co' }}
+          TMB_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TMB_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TMB_SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "未配置 TMB_SUPABASE_SERVICE_ROLE_KEY，跳过注册表写入。"
+            exit 0
+          fi
+
+          SCRIPT_URL="https://fastly.jsdelivr.net/gh/${GITHUB_REPOSITORY}@published/plugin.user.js"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          PAYLOAD=$(jq -n \
+            --arg id "${{ steps.meta.outputs.id }}" \
+            --arg name "${{ steps.meta.outputs.name }}" \
+            --arg version "${{ steps.meta.outputs.version }}" \
+            --arg description "${{ steps.meta.outputs.desc }}" \
+            --argjson matches '${{ steps.meta.outputs.matches }}' \
+            --arg script_url "$SCRIPT_URL" \
+            --arg sha256 "${{ steps.meta.outputs.sha }}" \
+            --arg updated_at "$NOW" \
+            '{id:$id, name:$name, version:$version, description:$description, matches:$matches, script_url:$script_url, sha256:$sha256, updated_at:$updated_at}')
+
+          echo "注册插件 ${SCRIPT_URL} sha256=${{ steps.meta.outputs.sha }}"
+
+          curl -sf -X POST "$TMB_SUPABASE_URL/rest/v1/plugins" \
+            -H "apikey: $TMB_SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $TMB_SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Content-Profile: tampermonkey_base" \
+            -H "Prefer: resolution=merge-duplicates,return=minimal" \
+            -d "$PAYLOAD"
+
+          echo "注册表写入完成。"

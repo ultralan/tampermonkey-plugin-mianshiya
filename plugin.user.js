@@ -1,213 +1,53 @@
-(function (PluginVerse) {
+(function (TM) {
   "use strict";
 
-  const VERSION = "0.6.4";
-  const eventCounts = Object.create(null);
-  const blockedEvents = [
-    "contextmenu",
-    "selectstart",
-    "copy",
-    "cut",
-    "dragstart",
-    "keydown",
-    "keyup",
-  ];
+  const VERSION = "0.7.0";
+
+  const CONTENT_WAIT_TIMEOUT = 15000;
+  const QUIET_PERIOD = 1500;
+  const QUIET_MAX_WAIT = 8000;
+  const CAPTURE_DEBOUNCE = 300;
+
+  const QUESTION_PATH_RE = /^\/(?:bank\/(\d+)\/)?question\/(\d+)(?:[/?#]|$)/;
+  const SECTION_TITLES = ["回答重点", "扩展知识", "面试官追问"];
+  const DIFFICULTIES = ["简单", "中等", "困难"];
 
   let styleEl = null;
-  let customMenuEl = null;
-  let downloadButtonEl = null;
+  let routeDebounceTimer = 0;
+  let lastCaptureKey = "";
 
   function log(level, event, data) {
-    PluginVerse.log(level, event, {
-      pluginVersion: VERSION,
-      url: location.href,
-      readyState: document.readyState,
-      data,
-    });
+    TM.log(level, event, { pluginVersion: VERSION, data: data || {} });
   }
 
   function domRoot() {
     return document.body || document.documentElement;
   }
 
-  function runWhenDomReady(fn, label) {
-    const run = () => {
-      try {
-        fn();
-      } catch (error) {
-        log("error", "mianshiya_dom_task_failed", { label, error: String(error?.stack || error) });
-      }
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  // ============================================================
+  // URL 解析
+  // ============================================================
+
+  function parseQuestionPath(pathname) {
+    const match = String(pathname || "").match(QUESTION_PATH_RE);
+    if (!match) {
+      return null;
+    }
+    return {
+      bankId: match[1] ? Number(match[1]) : null,
+      questionId: Number(match[2]),
     };
-
-    if (domRoot()) {
-      run();
-      return;
-    }
-
-    document.addEventListener("DOMContentLoaded", run, { once: true });
-    window.setTimeout(run, 500);
-    window.setTimeout(run, 1500);
   }
 
-  function selectedText() {
-    return String(window.getSelection?.() || "").trim();
-  }
+  // ============================================================
+  // 解除页面选择/复制限制（无 UI，纯行为解锁）
+  // ============================================================
 
-  function safeClipboardWrite(text) {
-    if (!text) {
-      throw new Error("没有可复制内容");
-    }
-    PluginVerse.setClipboard(text);
-  }
-
-  function safeFileName(value) {
-    const cleaned = String(value || "")
-      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 90)
-      .trim();
-    return cleaned || "mianshiya-page";
-  }
-
-  function markdownFileName() {
-    return `${safeFileName(getPageTitle())}.md`;
-  }
-
-  function downloadTextFile(filename, text) {
-    if (!window.URL || typeof URL.createObjectURL !== "function") {
-      safeClipboardWrite(text);
-      throw new Error("当前浏览器不支持 Blob 下载，已复制 Markdown 到剪贴板");
-    }
-
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    anchor.rel = "noopener";
-    anchor.style.display = "none";
-
-    try {
-      domRoot().appendChild(anchor);
-      anchor.click();
-    } finally {
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-    }
-  }
-
-  async function downloadMarkdown() {
-    const markdown = buildMarkdown();
-    const filename = markdownFileName();
-    downloadTextFile(filename, markdown);
-    log("info", "mianshiya_markdown_downloaded", { filename, length: markdown.length });
-  }
-
-  function hideCustomMenu() {
-    if (customMenuEl) {
-      customMenuEl.remove();
-      customMenuEl = null;
-    }
-  }
-
-  function menuItem(text, onClick) {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.textContent = text;
-    item.addEventListener("click", async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      try {
-        await onClick();
-      } catch (error) {
-        log("error", "mianshiya_menu_action_failed", {
-          action: text,
-          error: String(error?.stack || error),
-        });
-      } finally {
-        hideCustomMenu();
-      }
-    });
-    return item;
-  }
-
-  function showCustomMenu(x, y) {
-    runWhenDomReady(() => {
-      hideCustomMenu();
-
-      customMenuEl = document.createElement("div");
-      customMenuEl.id = "mianshiya-custom-menu";
-      customMenuEl.append(
-        menuItem("复制当前选区", copySelection),
-        menuItem("复制题目 Markdown", copyMarkdown),
-        menuItem("下载当前页 Markdown", downloadMarkdown),
-        menuItem("上报页面快照", reportSnapshot),
-        menuItem("复制页面快照", copySnapshot),
-        menuItem("重新解除限制", async () => {
-          installEventGuards();
-          injectPageContextGuard();
-          injectStyle();
-          removeModalBlockers();
-          log("info", "mianshiya_reinforce_by_context_menu", {});
-        }),
-      );
-
-      domRoot().appendChild(customMenuEl);
-
-      const rect = customMenuEl.getBoundingClientRect();
-      const left = Math.min(Math.max(8, x), Math.max(8, window.innerWidth - rect.width - 8));
-      const top = Math.min(Math.max(8, y), Math.max(8, window.innerHeight - rect.height - 8));
-      customMenuEl.style.left = `${left}px`;
-      customMenuEl.style.top = `${top}px`;
-
-      log("info", "mianshiya_context_menu_shown", { x, y, selectedLength: selectedText().length });
-    }, "显示自定义右键菜单");
-  }
-
-  function installDownloadButton() {
-    runWhenDomReady(() => {
-      const main = getMainContentNode();
-      if (!main) {
-        return;
-      }
-
-      const existing = document.getElementById("mianshiya-md-download-toolbar");
-      if (existing && existing.parentElement === main) {
-        downloadButtonEl = document.getElementById("mianshiya-md-download-button");
-        return;
-      }
-      existing?.remove();
-
-      const toolbar = document.createElement("div");
-      toolbar.id = "mianshiya-md-download-toolbar";
-
-      const button = document.createElement("button");
-      button.id = "mianshiya-md-download-button";
-      button.type = "button";
-      button.textContent = "下载 MD";
-      button.title = "下载当前页面 Markdown";
-      button.setAttribute("aria-label", "下载当前页面 Markdown");
-      button.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        try {
-          await downloadMarkdown();
-        } catch (error) {
-          log("error", "mianshiya_markdown_download_failed", {
-            error: String(error?.stack || error),
-          });
-        }
-      });
-
-      toolbar.appendChild(button);
-      main.insertBefore(toolbar, main.firstChild);
-      downloadButtonEl = button;
-      log("info", "mianshiya_download_button_installed", {
-        target: main.id ? `#${main.id}` : String(main.tagName || "main").toLowerCase(),
-      });
-    }, "安装 Markdown 下载按钮");
-  }
+  const guardedEvents = ["contextmenu", "selectstart", "copy", "cut", "dragstart", "keydown", "keyup"];
 
   function isProtectedShortcut(event) {
     const key = String(event.key || "").toLowerCase();
@@ -223,285 +63,113 @@
       return;
     }
 
-    eventCounts[event.type] = (eventCounts[event.type] || 0) + 1;
-
-    if (event.type === "contextmenu") {
-      event.preventDefault();
-      showCustomMenu(event.clientX || 20, event.clientY || 20);
-      event.stopImmediatePropagation();
-      return;
-    }
-
-    if (event.type === "copy") {
-      const text = selectedText();
-      if (text && event.clipboardData) {
-        event.clipboardData.setData("text/plain", text);
-        event.preventDefault();
-        log("info", "mianshiya_copy_intercepted", { selectedLength: text.length });
-      } else {
-        log("warn", "mianshiya_copy_without_selection", {});
-      }
-    }
-
+    // 阻断站点的限制 handler，不阻止默认行为：
+    // contextmenu 恢复浏览器原生菜单，copy 保留系统剪贴板写入。
     event.stopImmediatePropagation();
-  }
-
-  function showContextMenuFromPointer(event) {
-    if (event.button !== 2) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    window.setTimeout(() => {
-      showCustomMenu(event.clientX || 20, event.clientY || 20);
-      log("info", "mianshiya_context_menu_fallback_mousedown", {
-        x: event.clientX || 20,
-        y: event.clientY || 20,
-      });
-    }, 0);
   }
 
   function installEventGuards() {
-    for (const type of blockedEvents) {
+    for (const type of guardedEvents) {
       window.addEventListener(type, guardEvent, true);
       document.addEventListener(type, guardEvent, true);
     }
-    window.addEventListener("mousedown", showContextMenuFromPointer, true);
-    document.addEventListener("mousedown", showContextMenuFromPointer, true);
-    log("info", "mianshiya_event_guards_installed", {});
   }
 
   function injectPageContextGuard() {
-    runWhenDomReady(() => {
-      const code = `
-        (() => {
-          if (window.__pluginverseMianshiyaInstalled) return;
-          window.__pluginverseMianshiyaInstalled = true;
+    const code = `
+      (() => {
+        if (window.__tmbMianshiyaGuardInstalled) return;
+        window.__tmbMianshiyaGuardInstalled = true;
 
-          const log = (message) => {
-            try {
-              window.dispatchEvent(new CustomEvent("__pluginverse_plugin_log__", {
-                detail: { pluginId: "mianshiya", message }
-              }));
-            } catch {}
-          };
-          const blockedEvents = ["contextmenu", "selectstart", "copy", "cut", "dragstart"];
-          const keyEvents = ["keydown", "keyup"];
-          const selectedText = () => String(window.getSelection && window.getSelection() || "").trim();
-          const isProtectedShortcut = (event) => {
-            const key = String(event.key || "").toLowerCase();
-            return key === "f12" ||
-              ((event.metaKey || event.ctrlKey) && ["c", "s", "u"].includes(key)) ||
-              ((event.metaKey || event.ctrlKey) && event.shiftKey && ["i", "j", "c"].includes(key));
-          };
-          const guard = (event) => {
-            if (keyEvents.includes(event.type) && !isProtectedShortcut(event)) return;
-            if (event.type === "contextmenu") {
-              event.preventDefault();
-              try {
-                window.dispatchEvent(new CustomEvent("__pluginverse_mianshiya_contextmenu__", {
-                  detail: { x: event.clientX || 20, y: event.clientY || 20 }
-                }));
-              } catch {}
+        const blockedEvents = ["contextmenu", "selectstart", "copy", "cut", "dragstart"];
+        const keyEvents = ["keydown", "keyup"];
+        const isProtectedShortcut = (event) => {
+          const key = String(event.key || "").toLowerCase();
+          return key === "f12" ||
+            ((event.metaKey || event.ctrlKey) && ["c", "s", "u"].includes(key)) ||
+            ((event.metaKey || event.ctrlKey) && event.shiftKey && ["i", "j", "c"].includes(key));
+        };
+        const guard = (event) => {
+          if (keyEvents.includes(event.type) && !isProtectedShortcut(event)) return;
+          event.stopImmediatePropagation();
+        };
+
+        [...blockedEvents, ...keyEvents].forEach((type) => {
+          window.addEventListener(type, guard, true);
+          document.addEventListener(type, guard, true);
+        });
+
+        const rawAdd = EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener = function(type, listener, options) {
+          if (blockedEvents.includes(type)) {
+            return rawAdd.call(this, type, function(event) {
               event.stopImmediatePropagation();
-              return;
-            }
-            if (event.type === "copy") {
-              const text = selectedText();
-              if (text && event.clipboardData) {
-                event.clipboardData.setData("text/plain", text);
-                event.preventDefault();
-                log("页面上下文接管 copy，写入选区 " + text.length + " 字");
-              }
-            }
-            event.stopImmediatePropagation();
-          };
-
-          [...blockedEvents, ...keyEvents].forEach((type) => {
-            window.addEventListener(type, guard, true);
-            document.addEventListener(type, guard, true);
-          });
-
-          const rawAdd = EventTarget.prototype.addEventListener;
-          EventTarget.prototype.addEventListener = function(type, listener, options) {
-            if (blockedEvents.includes(type)) {
-              log("拦截页面注册限制事件：" + type);
-              return rawAdd.call(this, type, function(event) {
-                if (event.type === "copy") {
-                  const text = selectedText();
-                  if (text && event.clipboardData) {
-                    event.clipboardData.setData("text/plain", text);
-                    event.preventDefault();
-                  }
-                }
-              }, options);
-            }
-            if (keyEvents.includes(type)) {
-              return rawAdd.call(this, type, function(event) {
-                if (isProtectedShortcut(event)) {
-                  log("跳过页面快捷键拦截：" + type + " " + event.key);
-                  return;
-                }
-                return listener && listener.apply(this, arguments);
-              }, options);
-            }
-            return rawAdd.call(this, type, listener, options);
-          };
-
-          for (const target of [window, document, document.documentElement]) {
-            if (!target) continue;
-            for (const prop of ["oncontextmenu", "onselectstart", "oncopy", "oncut", "ondragstart"]) {
-              try {
-                Object.defineProperty(target, prop, {
-                  configurable: true,
-                  get() { return null; },
-                  set() { log("阻止赋值 " + prop); },
-                });
-              } catch {}
-            }
+            }, options);
           }
+          if (keyEvents.includes(type)) {
+            return rawAdd.call(this, type, function(event) {
+              if (isProtectedShortcut(event)) return;
+              return listener && listener.apply(this, arguments);
+            }, options);
+          }
+          return rawAdd.call(this, type, listener, options);
+        };
 
-          const rawSetInterval = window.setInterval;
-          const rawSetTimeout = window.setTimeout;
-          const hasDebugger = (fn) => /debugger/.test(String(fn));
-          window.setInterval = function(fn, ...rest) {
-            if (hasDebugger(fn)) {
-              log("阻止 debugger interval");
-              return 0;
-            }
-            return rawSetInterval.call(this, fn, ...rest);
-          };
-          window.setTimeout = function(fn, ...rest) {
-            if (hasDebugger(fn)) {
-              log("阻止 debugger timeout");
-              return 0;
-            }
-            return rawSetTimeout.call(this, fn, ...rest);
-          };
+        for (const target of [window, document, document.documentElement]) {
+          if (!target) continue;
+          for (const prop of ["oncontextmenu", "onselectstart", "oncopy", "oncut", "ondragstart"]) {
+            try {
+              Object.defineProperty(target, prop, {
+                configurable: true,
+                get() { return null; },
+                set() {},
+              });
+            } catch {}
+          }
+        }
 
-          log("页面上下文保护已安装");
-        })();
-      `;
+        const rawSetInterval = window.setInterval;
+        const rawSetTimeout = window.setTimeout;
+        const hasDebugger = (fn) => /debugger/.test(String(fn));
+        window.setInterval = function(fn, ...rest) {
+          if (hasDebugger(fn)) return 0;
+          return rawSetInterval.call(this, fn, ...rest);
+        };
+        window.setTimeout = function(fn, ...rest) {
+          if (hasDebugger(fn)) return 0;
+          return rawSetTimeout.call(this, fn, ...rest);
+        };
+      })();
+    `;
 
+    const inject = () => {
       const script = document.createElement("script");
       script.textContent = code;
       (document.head || document.documentElement || document.body).appendChild(script);
       script.remove();
-      log("info", "mianshiya_page_context_guard_injected", {});
-    }, "注入页面上下文保护");
+    };
+
+    if (domRoot()) {
+      inject();
+    } else {
+      document.addEventListener("DOMContentLoaded", inject, { once: true });
+    }
   }
 
   function injectStyle() {
-    runWhenDomReady(() => {
+    const inject = () => {
       styleEl?.remove();
       styleEl = document.createElement("style");
-      styleEl.id = "mianshiya-unlock-style";
+      styleEl.id = "tmb-mianshiya-unlock-style";
       styleEl.textContent = `
         html, body, body * {
           -webkit-user-select: text !important;
           -moz-user-select: text !important;
-          -ms-user-select: text !important;
           user-select: text !important;
         }
 
         body {
           -webkit-touch-callout: default !important;
-        }
-
-        #question-content-in-bank-client,
-        #question-content-in-bank-client *,
-        #question-main,
-        #question-main *,
-        .markdown-body,
-        .markdown-body *,
-        #mianshiya-md-download-toolbar,
-        #mianshiya-md-download-toolbar * {
-          -webkit-user-select: text !important;
-          user-select: text !important;
-          pointer-events: auto !important;
-        }
-
-        #mianshiya-custom-menu,
-        #mianshiya-custom-menu * {
-          -webkit-user-select: text !important;
-          user-select: text !important;
-          pointer-events: auto !important;
-        }
-
-        #mianshiya-custom-menu {
-          position: fixed !important;
-          z-index: 2147483647 !important;
-          display: flex !important;
-          flex-direction: column !important;
-          min-width: 190px !important;
-          padding: 6px !important;
-          border: 1px solid rgba(0, 0, 0, 0.16) !important;
-          border-radius: 8px !important;
-          background: rgba(255, 255, 255, 0.98) !important;
-          box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22) !important;
-          font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-        }
-
-        #mianshiya-custom-menu button {
-          display: block !important;
-          width: 100% !important;
-          padding: 8px 10px !important;
-          border: 0 !important;
-          border-radius: 6px !important;
-          color: #111827 !important;
-          background: transparent !important;
-          text-align: left !important;
-          cursor: pointer !important;
-          font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-        }
-
-        #mianshiya-custom-menu button:hover {
-          background: #f3f4f6 !important;
-        }
-
-        #mianshiya-md-download-toolbar {
-          display: flex !important;
-          justify-content: flex-end !important;
-          align-items: center !important;
-          min-height: 34px !important;
-          margin: 10px 0 12px !important;
-          padding: 0 !important;
-          position: relative !important;
-          z-index: 20 !important;
-          pointer-events: auto !important;
-        }
-
-        #mianshiya-md-download-button {
-          appearance: none !important;
-          min-width: 76px !important;
-          min-height: 32px !important;
-          padding: 6px 10px !important;
-          border: 1px solid rgba(17, 24, 39, 0.22) !important;
-          border-radius: 6px !important;
-          background: #ffffff !important;
-          color: #111827 !important;
-          box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
-          cursor: pointer !important;
-          font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-          letter-spacing: 0 !important;
-          white-space: nowrap !important;
-        }
-
-        #mianshiya-md-download-button:hover {
-          border-color: rgba(20, 84, 255, 0.42) !important;
-          background: #f8fafc !important;
-          color: #0f172a !important;
-        }
-
-        #mianshiya-md-download-button:active {
-          transform: translateY(1px) !important;
-        }
-
-        #mianshiya-md-download-button:focus-visible {
-          outline: 2px solid rgba(20, 84, 255, 0.36) !important;
-          outline-offset: 2px !important;
         }
       `;
       (document.head || document.documentElement || document.body).appendChild(styleEl);
@@ -513,51 +181,18 @@
         node.oncopy = null;
         node.onselectstart = null;
       }
-    }, "注入样式");
-  }
+    };
 
-  function removeModalBlockers() {
-    for (const selector of [".ant-modal-mask", ".ant-modal-wrap.login-modal"]) {
-      for (const node of document.querySelectorAll(selector)) {
-        node.style.pointerEvents = "none";
-      }
+    if (domRoot()) {
+      inject();
+    } else {
+      document.addEventListener("DOMContentLoaded", inject, { once: true });
     }
   }
 
-  function visibleText(node) {
-    if (!node) {
-      return "";
-    }
-
-    const clone = node.cloneNode(true);
-    const removeSelectors = [
-      "script",
-      "style",
-      "svg",
-      "button",
-      "textarea",
-      "#mianshiya-md-download-toolbar",
-      "#mianshiya-md-download-button",
-      ".ant-modal-root",
-      ".login-modal",
-      ".ant-modal-mask",
-      ".question-title-actions",
-      ".ant-tabs-nav",
-      "footer",
-    ];
-
-    for (const selector of removeSelectors) {
-      for (const item of clone.querySelectorAll(selector)) {
-        item.remove();
-      }
-    }
-
-    return clone.innerText
-      .replace(/\u00a0/g, " ")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-  }
+  // ============================================================
+  // DOM -> Markdown 转换（content_md 全页原始文本用）
+  // ============================================================
 
   function normalizeMarkdown(text) {
     return String(text || "")
@@ -608,9 +243,6 @@
       "textarea",
       "input",
       "select",
-      "#mianshiya-custom-menu",
-      "#mianshiya-md-download-toolbar",
-      "#mianshiya-md-download-button",
       ".ant-modal-root",
       ".login-modal",
       ".ant-modal-mask",
@@ -626,17 +258,6 @@
     }
 
     return clone;
-  }
-
-  function removeDuplicateTitleHeading(node, title) {
-    const firstHeading = node?.querySelector?.("h1");
-    if (!firstHeading) {
-      return;
-    }
-
-    if (normalizeMarkdown(firstHeading.textContent) === normalizeMarkdown(title)) {
-      firstHeading.remove();
-    }
   }
 
   function childNodesToMarkdown(node, context = {}) {
@@ -809,6 +430,10 @@
     return childNodesToMarkdown(node, context);
   }
 
+  // ============================================================
+  // 页面定位与元数据解析
+  // ============================================================
+
   function getMainContentNode() {
     return (
       document.querySelector("#question-content-in-bank-client") ||
@@ -818,17 +443,156 @@
     );
   }
 
-  function getPageTitle() {
-    const main = getMainContentNode();
-    const h1 = main?.querySelector("h1") || document.querySelector("h1");
-    return visibleText(h1) || document.title.replace(/\s+-\s+面试鸭.*$/, "");
+  function visibleText(node) {
+    if (!node) {
+      return "";
+    }
+    return normalizeMarkdown(cloneContentNode(node).innerText);
   }
 
-  function buildMarkdown() {
-    const main = getMainContentNode();
-    const title = getPageTitle();
+  function parseTitle(main) {
+    const h1 = main?.querySelector("h1") || document.querySelector("h1");
+    const raw = normalizeMarkdown(h1?.textContent) ||
+      document.title.replace(/\s+-\s+面试鸭.*$/, "");
+    const match = raw.match(/^(\d+)\.\s*(.+)$/);
+    if (match) {
+      return { questionNo: Number(match[1]), title: match[2].trim() };
+    }
+    return { questionNo: null, title: raw };
+  }
+
+  // 在正文容器前部的小徽标元素里找难度/VIP 标记。
+  function parseBadges(main) {
+    const badges = { difficulty: null, isVip: false };
+    if (!main) {
+      return badges;
+    }
+
+    const candidates = main.querySelectorAll("span, div, p, i");
+    let scanned = 0;
+    for (const node of candidates) {
+      if (scanned > 200) {
+        break;
+      }
+      if (node.children.length > 0) {
+        continue;
+      }
+      const text = normalizeMarkdown(node.textContent);
+      if (!text || text.length > 6) {
+        continue;
+      }
+      scanned += 1;
+      if (!badges.difficulty && DIFFICULTIES.includes(text)) {
+        badges.difficulty = text;
+      } else if (!badges.isVip && text.toUpperCase() === "VIP") {
+        badges.isVip = true;
+      }
+      if (badges.difficulty && badges.isVip) {
+        break;
+      }
+    }
+    return badges;
+  }
+
+  function parseTags(main) {
+    if (!main) {
+      return [];
+    }
+    const tags = new Set();
+    for (const anchor of main.querySelectorAll('a[href*="/tag/"]')) {
+      const text = normalizeMarkdown(anchor.textContent);
+      if (text) {
+        tags.add(text);
+      }
+    }
+    return Array.from(tags);
+  }
+
+  function parseBankIds() {
+    const ids = new Set();
+    for (const anchor of document.querySelectorAll('a[href*="/bank/"]')) {
+      const match = String(anchor.getAttribute("href") || "").match(/\/bank\/(\d+)/);
+      if (match) {
+        ids.add(Number(match[1]));
+      }
+    }
+    return Array.from(ids);
+  }
+
+  // 按 h2 标题切分正文段落，返回 {标题: 段落文本(md)}。
+  function parseSections(main) {
+    const sections = {};
+    if (!main) {
+      return sections;
+    }
+
+    const headings = Array.from(main.querySelectorAll("h2")).filter((heading) =>
+      SECTION_TITLES.includes(normalizeMarkdown(heading.textContent)),
+    );
+    if (headings.length === 0) {
+      return sections;
+    }
+
+    const headingSet = new Set(headings);
+    for (let index = 0; index < headings.length; index += 1) {
+      const heading = headings[index];
+      const parts = [];
+      let node = heading.nextElementSibling;
+      while (node && !headingSet.has(node)) {
+        parts.push(nodeToMarkdown(node));
+        node = node.nextElementSibling;
+      }
+      sections[normalizeMarkdown(heading.textContent)] = normalizeMarkdown(parts.join(""));
+    }
+    return sections;
+  }
+
+  // 追问段："#### 提问：X" + 后续文本中 "回答：Y" 配对。
+  function parseFollowUps(sectionText) {
+    if (!sectionText) {
+      return null;
+    }
+
+    const followUps = [];
+    const blocks = sectionText.split(/^#### (?=提问)/m);
+    for (const block of blocks) {
+      const questionMatch = block.match(/^提问[：:]\s*(.+)/);
+      if (!questionMatch) {
+        continue;
+      }
+      const rest = block
+        .slice(questionMatch[0].length)
+        .replace(/^提问[：:].*/m, "")
+        .trim();
+      const answerMatch = rest.match(/回答[：:]\s*([\s\S]*)$/);
+      followUps.push({
+        q: questionMatch[1].trim(),
+        a: answerMatch ? answerMatch[1].trim() : rest.trim(),
+      });
+    }
+    return followUps.length > 0 ? followUps : null;
+  }
+
+  // ============================================================
+  // 采集与写入
+  // ============================================================
+
+  async function sha256Hex(text) {
+    if (!crypto?.subtle || typeof TextEncoder !== "function") {
+      return String(text.length);
+    }
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  function buildContentMd(main, title) {
     const bodyNode = main ? cloneContentNode(main) : null;
-    removeDuplicateTitleHeading(bodyNode, title);
+    let firstHeading = bodyNode?.querySelector?.("h1");
+    if (firstHeading && normalizeMarkdown(firstHeading.textContent) === normalizeMarkdown(title)) {
+      firstHeading.remove();
+    }
     const body = normalizeMarkdown(bodyNode ? nodeToMarkdown(bodyNode) : visibleText(main));
     const url = location.href.replace(/#.*$/, "");
 
@@ -838,159 +602,203 @@
       .trim() + "\n";
   }
 
-  function buildSnapshot() {
+  async function captureQuestion(info) {
     const main = getMainContentNode();
-    const markdown = buildMarkdown();
-    return {
-      pluginId: "mianshiya",
-      pluginVersion: VERSION,
-      capturedAt: new Date().toISOString(),
-      title: getPageTitle(),
-      source: location.href.replace(/#.*$/, ""),
-      description: document.querySelector('meta[name="description"]')?.content || "",
-      readyState: document.readyState,
-      selectedLength: selectedText().length,
-      bodyLength: main ? visibleText(main).length : 0,
-      markdownLength: markdown.length,
-      eventCounts: { ...eventCounts },
-      markdown,
+    const { questionNo, title } = parseTitle(main);
+    const badges = parseBadges(main);
+    const tags = parseTags(main);
+    const sections = parseSections(main);
+
+    let bankIds = parseBankIds();
+    if (info.bankId && !bankIds.includes(info.bankId)) {
+      bankIds.push(info.bankId);
+    }
+    bankIds.sort((a, b) => a - b);
+
+    const followUps = parseFollowUps(sections["面试官追问"]);
+    const contentMd = buildContentMd(main, title);
+    const contentHash = await sha256Hex(
+      [
+        title,
+        badges.difficulty || "",
+        tags.join(","),
+        sections["回答重点"] || "",
+        sections["扩展知识"] || "",
+        JSON.stringify(followUps || null),
+      ].join("\n\u0000\n"),
+    );
+
+    const payload = {
+      question_id: info.questionId,
+      question_no: questionNo,
+      title,
+      difficulty: badges.difficulty,
+      is_vip: badges.isVip,
+      tags,
+      bank_ids: bankIds,
+      answer_key: sections["回答重点"] || null,
+      extended_knowledge: sections["扩展知识"] || null,
+      follow_ups: followUps,
+      content_md: contentMd,
+      content_hash: contentHash,
+      source_url: location.href.replace(/#.*$/, ""),
     };
-  }
 
-  async function copySelection() {
-    const text = selectedText();
-    safeClipboardWrite(text);
-    log("info", "mianshiya_selection_copied", { length: text.length });
-  }
+    await TM.rest("questions", {
+      method: "POST",
+      payload,
+      prefer: "resolution=merge-duplicates,return=minimal",
+    });
 
-  async function copyMarkdown() {
-    const markdown = buildMarkdown();
-    safeClipboardWrite(markdown);
-    log("info", "mianshiya_markdown_copied", { length: markdown.length });
-  }
-
-  async function copySnapshot() {
-    const snapshot = buildSnapshot();
-    safeClipboardWrite(JSON.stringify(snapshot, null, 2));
-    log("info", "mianshiya_snapshot_copied", {
-      markdownLength: snapshot.markdownLength,
-      bodyLength: snapshot.bodyLength,
+    log("info", "mianshiya_question_upserted", {
+      questionId: info.questionId,
+      title,
+      answerKeyLength: payload.answer_key?.length || 0,
+      extendedLength: payload.extended_knowledge?.length || 0,
+      followUps: followUps?.length || 0,
+      bankIds,
     });
   }
 
-  async function reportSnapshot() {
-    const snapshot = buildSnapshot();
-    log("info", "mianshiya_snapshot_reported", snapshot);
+  // ============================================================
+  // 就绪等待
+  // ============================================================
+
+  function mainContentReady() {
+    const main = getMainContentNode();
+    if (!main) {
+      return false;
+    }
+    // "回答重点" 是官方解答的固定首节，出现即认为正文渲染完成。
+    return Array.from(main.querySelectorAll("h2")).some((heading) =>
+      normalizeMarkdown(heading.textContent) === "回答重点",
+    );
   }
 
-  function menuCommandStore() {
-    const key = "__pluginverseMianshiyaMenuCommandIds";
-    window[key] = Array.isArray(window[key]) ? window[key] : [];
-    return window[key];
-  }
-
-  function clearPluginMenuCommands() {
-    const commandIds = menuCommandStore();
-    while (commandIds.length) {
-      const id = commandIds.pop();
-      try {
-        if (typeof PluginVerse.unregisterMenuCommand === "function") {
-          PluginVerse.unregisterMenuCommand(id);
-        } else if (typeof GM_unregisterMenuCommand === "function") {
-          GM_unregisterMenuCommand(id);
-        }
-      } catch (error) {
-        log("warn", "mianshiya_plugin_menu_unregister_failed", { error: String(error?.stack || error) });
+  async function waitForContent() {
+    const deadline = Date.now() + CONTENT_WAIT_TIMEOUT;
+    while (Date.now() < deadline) {
+      if (mainContentReady()) {
+        return true;
       }
+      await sleep(300);
+    }
+    return mainContentReady();
+  }
+
+  // 等待 DOM 静默：懒加载图片、代码高亮等渲染完再抓。
+  function waitForQuiet() {
+    return new Promise((resolve) => {
+      let quietTimer = 0;
+      const hardStop = window.setTimeout(() => {
+        window.clearTimeout(quietTimer);
+        observer.disconnect();
+        resolve();
+      }, QUIET_MAX_WAIT);
+
+      const settle = () => {
+        window.clearTimeout(quietTimer);
+        quietTimer = window.setTimeout(() => {
+          window.clearTimeout(hardStop);
+          observer.disconnect();
+          resolve();
+        }, QUIET_PERIOD);
+      };
+
+      const observer = new MutationObserver(settle);
+      const root = domRoot();
+      if (root) {
+        observer.observe(root, { childList: true, subtree: true });
+      }
+      settle();
+    });
+  }
+
+  async function waitAndCapture(info) {
+    try {
+      const ready = await waitForContent();
+      if (!ready) {
+        log("warn", "mianshiya_content_not_ready", { questionId: info.questionId });
+      }
+      await waitForQuiet();
+
+      // 等待期间页面可能又跳走了。
+      const current = parseQuestionPath(location.pathname);
+      if (!current || current.questionId !== info.questionId) {
+        log("info", "mianshiya_capture_abandoned", { questionId: info.questionId });
+        return;
+      }
+
+      await captureQuestion(current);
+    } catch (error) {
+      log("error", "mianshiya_capture_failed", {
+        questionId: info.questionId,
+        error: String(error?.stack || error),
+      });
     }
   }
 
-  function registerMenuCommand(name, handler) {
-    if (typeof PluginVerse.registerMenuCommand === "function") {
-      return PluginVerse.registerMenuCommand(name, handler);
-    }
+  // ============================================================
+  // SPA 路由监听
+  // ============================================================
 
-    if (typeof GM_registerMenuCommand === "function") {
-      return GM_registerMenuCommand(`面试鸭页面辅助：${name}`, handler);
+  function patchHistory() {
+    for (const method of ["pushState", "replaceState"]) {
+      const raw = history[method];
+      if (typeof raw !== "function" || raw.__tmbPatched) {
+        continue;
+      }
+      const patched = function (...args) {
+        const result = raw.apply(this, args);
+        window.dispatchEvent(new CustomEvent("__tmb_route_change__"));
+        return result;
+      };
+      patched.__tmbPatched = true;
+      history[method] = patched;
     }
-
-    return null;
   }
 
-  function registerPluginMenuCommands() {
-    if (typeof PluginVerse.registerMenuCommand !== "function" && typeof GM_registerMenuCommand !== "function") {
-      log("warn", "mianshiya_plugin_menu_unavailable", {});
-      return;
-    }
+  function onRouteChange() {
+    window.clearTimeout(routeDebounceTimer);
+    routeDebounceTimer = window.setTimeout(() => {
+      const info = parseQuestionPath(location.pathname);
+      if (!info) {
+        lastCaptureKey = "";
+        return;
+      }
 
-    clearPluginMenuCommands();
-
-    const commandIds = menuCommandStore();
-    commandIds.push(registerMenuCommand("下载当前页 Markdown", downloadMarkdown));
-    commandIds.push(registerMenuCommand("复制当前页 Markdown", copyMarkdown));
-    commandIds.push(registerMenuCommand("复制页面快照", copySnapshot));
-    commandIds.push(registerMenuCommand("重新解除限制", async () => {
-      installEventGuards();
-      injectPageContextGuard();
-      injectStyle();
-      installDownloadButton();
-      removeModalBlockers();
-      log("info", "mianshiya_reinforce_by_tampermonkey_menu", {});
-    }));
+      const key = `${info.questionId}@${info.bankId || ""}`;
+      if (key === lastCaptureKey) {
+        return;
+      }
+      lastCaptureKey = key;
+      log("info", "mianshiya_question_page_detected", { questionId: info.questionId, bankId: info.bankId });
+      waitAndCapture(info);
+    }, CAPTURE_DEBOUNCE);
   }
+
+  function installRouteWatcher() {
+    patchHistory();
+    window.addEventListener("popstate", onRouteChange);
+    window.addEventListener("__tmb_route_change__", onRouteChange);
+    onRouteChange();
+  }
+
+  // ============================================================
+  // 启动
+  // ============================================================
 
   function boot() {
     log("info", "mianshiya_plugin_boot", {
       version: VERSION,
       url: location.href,
       readyState: document.readyState,
-      hasBody: Boolean(document.body),
-      hasDocumentElement: Boolean(document.documentElement),
     });
-
-    window.addEventListener("__pluginverse_plugin_log__", (event) => {
-      if (event.detail?.pluginId !== "mianshiya") {
-        return;
-      }
-      log("info", "mianshiya_page_context_log", { message: event.detail?.message || "" });
-    });
-    window.addEventListener("__pluginverse_mianshiya_contextmenu__", (event) => {
-      const detail = event.detail || {};
-      showCustomMenu(detail.x || 20, detail.y || 20);
-    });
-    window.addEventListener("click", hideCustomMenu, true);
-    window.addEventListener("scroll", hideCustomMenu, true);
-    window.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        hideCustomMenu();
-      }
-    }, true);
 
     installEventGuards();
     injectPageContextGuard();
     injectStyle();
-    installDownloadButton();
-    registerPluginMenuCommands();
-
-    const reinforce = () => {
-      try {
-        removeModalBlockers();
-        injectStyle();
-        installDownloadButton();
-      } catch (error) {
-        log("error", "mianshiya_reinforce_failed", { error: String(error?.stack || error) });
-      }
-    };
-
-    window.setTimeout(reinforce, 100);
-    window.setTimeout(reinforce, 600);
-    window.setTimeout(reinforce, 1500);
-
-    const timer = window.setInterval(reinforce, 2000);
-    window.setTimeout(() => {
-      window.clearInterval(timer);
-      log("info", "mianshiya_reinforce_finished", {});
-    }, 90000);
+    installRouteWatcher();
   }
 
   try {
@@ -998,4 +806,4 @@
   } catch (error) {
     log("error", "mianshiya_plugin_boot_failed", { error: String(error?.stack || error) });
   }
-})(PluginVerse);
+})(TM);

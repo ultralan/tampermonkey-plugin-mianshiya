@@ -1,11 +1,10 @@
 {
   "id": "mianshiya",
-  "name": "面试鸭页面辅助",
-  "version": "0.6.4",
-  "description": "解除面试鸭页面前端选择/复制限制，提供复制和下载 Markdown、调试日志和页面快照上报。",
+  "name": "面试鸭题库采集",
+  "version": "0.7.0",
+  "description": "进入面试鸭题目详情页自动解析并幂等写入 Supabase 题库表，同时解除页面选择/复制限制。",
   "matches": [
     "*://mianshiya.com/*",
     "*://*.mianshiya.com/*"
-  ],
-  "runAt": "document-start"
+  ]
 }
