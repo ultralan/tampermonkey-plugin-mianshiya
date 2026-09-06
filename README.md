@@ -5,7 +5,7 @@
 ## 工作方式
 
 - 插件由基座客户端从注册中心发现并动态加载，**不需要单独安装**。只需安装基座客户端：
-  [一键安装 Tampermonkey Base 客户端](https://fastly.jsdelivr.net/gh/ultralan/tampermonkey-base@published/client/tampermonkey-base.user.js)
+  [一键安装 Tampermonkey Base 客户端](https://cdn.jsdelivr.net/gh/ultralan/tampermonkey-base@published/client/tampermonkey-base.user.js)
 - 进入 `mianshiya.com` 的题目详情页（`/question/<id>` 或 `/bank/<bankId>/question/<id>`）后，插件等待正文渲染完成，解析核心字段并 upsert 到 `tampermonkey_base.questions` 表
 - 同一题重复访问覆盖更新；追问/扩展知识等段落未渲染（未登录/VIP）时对应字段为 null，带登录态重访自动补齐
 - 顺带解除页面选择/复制限制

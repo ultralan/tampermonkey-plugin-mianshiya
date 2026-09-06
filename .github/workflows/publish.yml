@@ -81,7 +81,7 @@ jobs:
             exit 0
           fi
 
-          SCRIPT_URL="https://fastly.jsdelivr.net/gh/${GITHUB_REPOSITORY}@published/plugin.user.js"
+          SCRIPT_URL="https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@published/plugin.user.js"
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           PAYLOAD=$(jq -n \
             --arg id "${{ steps.meta.outputs.id }}" \
