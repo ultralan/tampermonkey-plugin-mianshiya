@@ -20,6 +20,9 @@ create table if not exists tampermonkey_base.questions (
   content_md     text not null,
   content_hash   text not null,
   source_url     text not null,
+  -- 个人笔记，由人手动维护；插件的 upsert payload 不含该列，永不覆盖。
+  note           text,
+  note_updated_at timestamptz,
   captured_at    timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
@@ -91,3 +94,8 @@ begin
       alter column bank_ids type text[] using bank_ids::text[];
   end if;
 end $$;
+
+-- 笔记字段（幂等）。
+alter table tampermonkey_base.questions
+  add column if not exists note text,
+  add column if not exists note_updated_at timestamptz;
